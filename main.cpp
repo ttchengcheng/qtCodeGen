@@ -1,13 +1,14 @@
 #include <QCoreApplication>
 #include "enumtodebug.h"
 
-int main(int argc, char *argv[])
+int main(int /*argc*/, char * /*argv*/[])
 {
     EnumToDebug e;
     QString str;
     e.fromCode("", str);
 
-    QCoreApplication a(argc, argv);
+//    QCoreApplication a(argc, argv);
 
-    return a.exec();
+//    return a.exec();
+    return 0;
 }

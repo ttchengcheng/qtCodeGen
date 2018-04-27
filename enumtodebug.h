@@ -6,8 +6,7 @@
 class EnumToDebug
 {
 public:
-    EnumToDebug();
-
+    EnumToDebug() = default;
     bool fromCode(const QString &code, QString &result);
 
 private:

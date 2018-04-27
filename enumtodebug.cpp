@@ -1,33 +1,47 @@
 #include "enumtodebug.h"
 #include <QString>
-#include <Qlist>
+#include <QList>
 #include <QDebug>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
 #include <QMultiMap>
 
-EnumToDebug::EnumToDebug()
-{
-
-}
-
-bool EnumToDebug::fromCode(const QString &rawCode, QString &result)
+bool EnumToDebug::fromCode(const QString & /*rawCode*/, QString & /*result*/)
 {
     static const QString TEST_STRING = R"(
-                                       enum Corner {
-                                           TopLeftCorner = 0x00000,
-                                           TopRightCorner = 0x00001,
-                                           BottomLeftCorner = 0x00002,
-                                           BottomRightCorner = 0x00003
-                                       };
-                                         )";
+       enum InputMethodQuery {
+           ImEnabled = 0x1,
+           ImCursorRectangle = 0x2,
+           ImMicroFocus = 0x2, // deprecated
+           ImFont = 0x4,
+           ImCursorPosition = 0x8,
+           ImSurroundingText = 0x10,
+           ImCurrentSelection = 0x20,
+           ImMaximumTextLength = 0x40,
+           ImAnchorPosition = 0x80,
+           ImHints = 0x100,
+           ImPreferredLanguage = 0x200,
 
+           ImAbsolutePosition = 0x400,
+           ImTextBeforeCursor = 0x800,
+           ImTextAfterCursor = 0x1000,
+           ImEnterKeyType = 0x2000,
+           ImAnchorRectangle = 0x4000,
+           ImInputItemClipRectangle = 0x8000,
+
+           ImPlatformData = 0x80000000,
+           ImQueryInput = ImCursorRectangle | ImCursorPosition | ImSurroundingText |
+                          ImCurrentSelection | ImAnchorRectangle | ImAnchorPosition,
+           ImQueryAll = 0xffffffff
+       };
+    )";
     auto code = TEST_STRING;
-    code.replace(QRegularExpression("\\r"), "\n")
-            .replace(QRegularExpression("\\s+//.*\\n"), "")
-            .replace(QRegularExpression("/\\*.*\\*/"), "")
-            .replace(QRegularExpression("\\s"), " ")
-            .replace(QRegularExpression(" {2,}"), " ");
+    code
+    .replace(QRegularExpression("\\r"), "\n")
+    .replace(QRegularExpression("\\s+//.*\\n"), "")
+    .replace(QRegularExpression("/\\*.*\\*/"), "")
+    .replace(QRegularExpression("\\s"), " ")
+    .replace(QRegularExpression(" {2,}"), " ");
 
     QRegularExpression re("\\s?enum [class]?\\s?(\\b\\w+\\b)\\s?:?(.*)\\{(.+)\\}\\s?;\\s");
     auto match = re.match(code);
@@ -41,10 +55,11 @@ bool EnumToDebug::fromCode(const QString &rawCode, QString &result)
     qDebug() << "name" << name;
     qDebug() << "type" << type;
 
-    int value = 0;
-    QMultiMap<int, QString> items;
-    QRegularExpression lineRe1("\\s*(\\b\\w+\\b)\\s?=(\\S+)\\s?");
-    QRegularExpression lineRe2("\\s*(\\b\\w+\\b)\\s?");
+    qlonglong value = 0;
+    QMultiMap<qlonglong, QString> items;
+    QMap<QString, qlonglong> dict;
+    QRegularExpression lineRe1("\\s?(\\b\\w+\\b)\\s?=(.*)\\s?");
+    QRegularExpression lineRe2("\\s?(\\b\\w+\\b)\\s?");
     QString item, valueString;
     bool ok;
     for (const auto &line : list.split(',')) {
@@ -53,13 +68,24 @@ bool EnumToDebug::fromCode(const QString &rawCode, QString &result)
         if (match.hasMatch()) {
             item = match.captured(1);
             valueString = match.captured(2).trimmed();
-            if (valueString.startsWith("0x"), Qt::CaseInsensitive) {
-                value = valueString.toInt(&ok, 16);
+            if (valueString.startsWith("0x", Qt::CaseInsensitive)) {
+                value = valueString.toLongLong(&ok, 16);
             }
             else {
-                value = valueString.toInt(&ok, 10);
+                value = valueString.toLongLong(&ok, 10);
             }
-            if (!ok) { return false; }
+            if (!ok) {
+                qlonglong composedValue = 0;
+                auto composedList = valueString.split('|');
+                if (composedList.isEmpty()) { return false; }
+                for (auto otherItem : composedList) {
+                    otherItem = otherItem.trimmed();
+                    auto it = dict.find(otherItem);
+                    if (it == dict.end()) { return false; }
+                    composedValue |= it.value();
+                }
+                value = composedValue;
+            }
         }
         else {
             match = lineRe2.match(line);
@@ -73,6 +99,7 @@ bool EnumToDebug::fromCode(const QString &rawCode, QString &result)
         }
 
         items.insertMulti(value, item);
+        dict[item] = value;
     }
     for (auto k : items.keys()) {
         for (const auto &v : items.values(k)) {
