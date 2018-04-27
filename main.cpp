@@ -1,14 +1,24 @@
 #include <QCoreApplication>
+#include <QDebug>
 #include "enumtodebug.h"
+#include <QTextStream>
 
 int main(int /*argc*/, char * /*argv*/[])
 {
+    QTextStream cout(stdout);
+    QString rawCode, str;
+
+    bool isTest = false;
+    if (!isTest) {
+        QTextStream cin(stdin);
+        rawCode = cin.readAll();
+    }
+
     EnumToDebug e;
-    QString str;
-    e.fromCode("", str);
+    e.fromCode(rawCode, str);
 
-//    QCoreApplication a(argc, argv);
+    cout << str;
+    cout.flush();
 
-//    return a.exec();
     return 0;
 }
