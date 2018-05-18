@@ -1,29 +1,32 @@
 //license-placeholder 2018-5-17 Tao Cheng
+
 #include "includesorter.h"
 
-IncludeSorter::IncludeSorter()
+IncludeSorter::IncludeSorter() : mPchName(QLatin1Literal("pch.h"))
 {
     readPch();
 }
 
-QString IncludeSorter::path() const
+QString IncludeSorter::proFile() const
 {
-    return mRoot.absolutePath();
+    return mProFile;
 }
 
-void IncludeSorter::setPath(const QString &path)
+void IncludeSorter::setProFile(const QString &path)
 {
-    mRoot = path;
+    qDebug() << "pro file path: " << path;
+    mProFile = path;
 }
 
 bool IncludeSorter::readHeaders()
 {
-    QDirIterator it(mRoot, QDirIterator::Subdirectories);
+    QDir dir = QFileInfo(mProFile).absoluteDir().filePath(QStringLiteral("src"));
+    QDirIterator it(dir, QDirIterator::Subdirectories);
     while (it.hasNext()) {
         QString path = it.next();
         if (!path.endsWith(QLatin1String(".h"))) { continue; }
         auto before = QFileInfo(path).fileName();
-        auto after = mRoot.relativeFilePath(path);
+        auto after = dir.relativeFilePath(path);
         if (before != after) {
             mHeaders.insert(before, after);
         }
@@ -36,7 +39,8 @@ bool IncludeSorter::readHeaders()
 
 bool IncludeSorter::handleFiles()
 {
-    QDirIterator it(mRoot, QDirIterator::Subdirectories);
+    QDir dir = QFileInfo(mProFile).absoluteDir().filePath(QStringLiteral("src"));
+    QDirIterator it(dir, QDirIterator::Subdirectories);
     while (it.hasNext()) {
         QString path = it.next();
         if (!handleFile(path)) { return false; }
@@ -61,9 +65,8 @@ bool IncludeSorter::checkLicense(const QString &line)
 
 bool IncludeSorter::read()
 {
-    if (!mRoot.isReadable()) { setError(ReadDirFailed); return false; }
-
     try {
+        parseProFile();
         readHeaders();
         handleFiles();
     }
@@ -85,16 +88,24 @@ bool IncludeSorter::checkInclude(const QString &line)
     if (!match.hasMatch()) {
         match = QRegularExpression(QStringLiteral("\\s*#include\\s*<(.*)>\\s*")).match(line);
         isQuoteType = false;
-        qDebug() << "WARNING: not included in pch: [" << line << "]";
     }
 
     if (!match.hasMatch()) { return false; }
 
     QString item = match.captured(1);
     if (mPchItems.contains(item)) { return false; }
+    if (!isQuoteType) {
+        qDebug() << "WARNING: not included in pch: [" << line << "]";
+    }
 
     auto index = item.lastIndexOf(QLatin1Char('/'));
     auto fileName = index >= 0 ? item.mid(index + 1) : item;
+
+    // ignore #inlcude "xxxxx.h" for "xxxxx.cpp"
+    if (!mStatus.isHeader && fileName == mStatus.currentFile.baseName() + ".h") {
+        return true;
+    }
+
     auto it = mHeaders.find(fileName);
     if (it == mHeaders.end() || item == it.value()) {
         mStatus.mIncludes.push_back(line);
@@ -113,11 +124,31 @@ bool IncludeSorter::checkInclude(const QString &line)
 
     return true;
 }
-
 bool IncludeSorter::checkPreprocessingDirective(const QString &line)
 {
     Q_ASSERT(!mStatus.outOfIncludeArea);
     if (mStatus.outOfIncludeArea) { return true; }
+
+    bool hasContinueSign = line.endsWith(QLatin1Char('\\'));
+    if (mStatus.defineContinue) {
+        mStatus.preprocessings.push_back(line);
+        if (!hasContinueSign) {
+            mStatus.defineContinue = false;
+            if (!line.trimmed().isEmpty()) { mStatus.preprocessings.push_back(QLatin1Literal("")); }
+        }
+        return true;
+    }
+    if (hasContinueSign) {
+        if (QRegularExpression(QLatin1Literal("\\s*#\\s*define\\s+.*")).match(line).hasMatch()) {
+            mStatus.defineContinue = true;
+            mStatus.preprocessings.push_back(line);
+            return true;
+        }
+        else {
+            setError(ContinueSignInvalid);
+            return false;
+        }
+    }
 
     if (line.trimmed().isEmpty()) {
         qDebug() << "[" << mStatus.lineNo << "]" << "Empty line";
@@ -125,20 +156,35 @@ bool IncludeSorter::checkPreprocessingDirective(const QString &line)
     }
 
     if (mStatus.isHeader) {
-        if (QRegularExpression(QLatin1Literal("\\s*#ifndef.+_H")).match(line).hasMatch()) {
+        if (QRegularExpression(QLatin1Literal("\\s*#\\s*ifndef.+_H")).match(line).hasMatch()) {
             if (!mStatus.mGuardIfDef.isEmpty()) { setError(GuardIfDefDuplicated); return false; }
-            mStatus.mGuardIfDef = line;
+            mStatus.mGuardIfDef = QString(QStringLiteral("#ifndef %1_H")).arg(mStatus.currentFile.baseName().toUpper());
             return true;
         }
-        if (QRegularExpression(QLatin1Literal("\\s*#define.+_H")).match(line).hasMatch()) {
+        if (QRegularExpression(QLatin1Literal("\\s*#\\s*define.+_H")).match(line).hasMatch()) {
             if (mStatus.mGuardIfDef.isEmpty()) { setError(GuardIfDefInvalid); return false; }
             if (!mStatus.mGuardDefine.isEmpty()) { setError(GuardDefineDuplicated); return false; }
-            mStatus.mGuardDefine = line;
+            mStatus.mGuardDefine = QString(QStringLiteral("#define %1_H")).arg(mStatus.currentFile.baseName().toUpper());
             return true;
         }
 
         if (mStatus.mGuardIfDef.isEmpty()) { setError(GuardIfDefInvalid); return false; }
         if (mStatus.mGuardDefine.isEmpty()) { setError(GuardDefineInvalid); return false; }
+    }
+
+    if (QRegularExpression(QLatin1Literal("\\s*#\\s*if.+")).match(line).hasMatch()) {
+        mStatus.ifLevel++;
+        mStatus.preprocessings.push_back(line);
+        return true;
+    }
+    if (QRegularExpression(QLatin1Literal("\\s*#\\s*endif\\s*")).match(line).hasMatch()) {
+        mStatus.ifLevel--;
+        mStatus.preprocessings.push_back(line);
+
+        if (mStatus.ifLevel == 0) {
+            mStatus.preprocessings.push_back(QLatin1Literal(""));
+        }
+        return true;
     }
 
     return checkInclude(line);
@@ -147,6 +193,7 @@ bool IncludeSorter::checkPreprocessingDirective(const QString &line)
 bool IncludeSorter::checkOutOfIncludeArea(const QString &line)
 {
     if (mStatus.outOfIncludeArea) { return true; }
+    if (mStatus.defineContinue || mStatus.ifLevel > 0) { return false; }
     if (line.trimmed().isEmpty()) { return false; }
 
     if (!line.startsWith("//license") &&
@@ -166,19 +213,57 @@ void IncludeSorter::setError(IncludeSorter::ErrorCode err)
     throw mStatus.mErrorCode;
 }
 
+void IncludeSorter::setPchName(const QString &pchName)
+{
+    mPchName = pchName;
+}
+
+bool IncludeSorter::parseProFile()
+{
+    mPchName.clear();
+    if (!mProFile.endsWith(QStringLiteral(".pro"))) { setError(ProFileInvalid); return false; }
+
+    QFile file(mProFile);
+    if (!file.open(QFile::ReadOnly)) { setError(ProFileReadFailed); return false; }
+
+    QTextStream ts(&file);
+    while (!ts.atEnd()) {
+        const auto &line = ts.readLine().trimmed();
+        if (line.startsWith(QStringLiteral("PRECOMPILED_HEADER"))) {
+            auto parts = line.split(QLatin1Char('='));
+            if (parts.length() == 2) {
+                mPchName = parts[1].trimmed();
+                auto index = mPchName.lastIndexOf(QLatin1Char('/'));
+                if (index >= 0) {
+                    mPchName = mPchName.mid(index + 1);
+                }
+            }
+            if (mPchName.isEmpty()) {
+                qDebug() << "WARNING: invalid PRECOMPILED_HEADER setting in " << mProFile;
+            }
+            else {
+                qDebug() << "pch is: " << mPchName;
+            }
+            break;
+        }
+    }
+    file.close();
+    return true;
+}
+
 bool IncludeSorter::handleFile(const QString &filePath)
 {
-    if (filePath.endsWith(QStringLiteral("pch.h"))) { return true; }
-
-    qDebug() << endl << "start parsing file [" << filePath << "]...";
+    if (!mPchName.isEmpty() && filePath.endsWith(mPchName)) { return true; }
 
     mStatus.clear();
+    mStatus.currentFile.setFile(filePath);
+
     bool isHeader = filePath.endsWith(QStringLiteral(".h"));
     bool isCpp = filePath.endsWith(QStringLiteral(".cpp"));
     if (!isHeader && !isCpp) { return true; }
-    mStatus.isHeader = isHeader;
 
-    qDebug() << "isHeader: " << mStatus.isHeader;
+    qDebug() << endl << "start parsing file [" << filePath << "]...";
+    mStatus.isHeader = isHeader;
 
     // read lines
     {
@@ -211,12 +296,19 @@ bool IncludeSorter::handleFile(const QString &filePath)
             ts << endl;
         }
         if (mStatus.isHeader) {
-            ts << "#include \"pch.h\"" << endl;
+            ts << "#include \"" << mPchName << "\"" << endl;
+        }
+        else {
+            ts << "#include \"" << mStatus.currentFile.baseName() + ".h\"" << endl;
         }
         for (const auto &line : mStatus.mIncludes) {
             ts << line << endl;
         }
         ts << endl;
+        for (const auto &line : mStatus.preprocessings) {
+            ts << line << endl;
+        }
+        if (!mStatus.preprocessings.isEmpty() && !mStatus.preprocessings.last().isEmpty()) ts << endl;
         for (const auto &line : mStatus.mLines) {
             ts << line << endl;
         }
@@ -242,12 +334,16 @@ bool IncludeSorter::parseLine(const QString &line)
 
 void IncludeSorter::HeaderStatus::clear()
 {
+    currentFile.setFile(QStringLiteral(""));
     mLicenseHolder.clear();
     mGuardIfDef.clear();
     mGuardDefine.clear();
     mIncludes.clear();
+    preprocessings.clear();
     mLines.clear();
     outOfIncludeArea = false;
+    ifLevel = 0;
+    defineContinue = false;
     isHeader = true;
     mErrorCode = Ok;
     lineNo = 0;
@@ -391,6 +487,11 @@ bool IncludeSorter::readPch()
         QLatin1Literal("math.h"),
         QLatin1Literal("stdio.h"),
         QLatin1Literal("pch.h"),
+        QLatin1Literal("commonpch.h"),
+        QLatin1Literal("QThread"),
+        QLatin1Literal("QMutexLocker"),
+        QLatin1Literal("QLatin1String"),
+        QLatin1Literal("QMutex"),
     };
     return true;
 }

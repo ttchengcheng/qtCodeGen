@@ -23,7 +23,8 @@ int main(int argc, char *argv[])
         if (argc < 3) { showHelp(); return 0; }
 
         IncludeSorter ir;
-        ir.setPath(argv[1]);
+        ir.setProFile(argv[2]);
+
         ir.read();
     }
     else if (QLatin1Literal(argv[1]) == QLatin1Literal("-ed")) {

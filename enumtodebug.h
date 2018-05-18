@@ -1,8 +1,9 @@
+//license-placeholder 2018-5-17 Tao Cheng
+
 #ifndef ENUMTODEBUG_H
 #define ENUMTODEBUG_H
 
-#include <QString>
-#include <QMultiMap>
+#include "pch.h"
 
 class EnumToDebug
 {

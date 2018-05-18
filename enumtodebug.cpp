@@ -1,10 +1,6 @@
+//license-placeholder 2018-5-17 Tao Cheng
+
 #include "enumtodebug.h"
-#include <QDebug>
-#include <QList>
-#include <QRegularExpression>
-#include <QRegularExpressionMatch>
-#include <QString>
-#include <QTextStream>
 
 bool EnumToDebug::fromCode(const QString &rawCode, QString &result)
 {
